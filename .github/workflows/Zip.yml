@@ -1,0 +1,27 @@
+name: Extrair ZIP
+on:
+  push:
+    branches: [main]
+    paths: ['repo.zip']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+jobs:
+  extrair:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extrair repo.zip na raiz
+        run: |
+          [ -f repo.zip ] || { echo "repo.zip não encontrado"; exit 0; }
+          unzip -o repo.zip -x '.github/*'
+          git rm -q repo.zip
+          git add -A
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git commit -m "Extrai repo.zip"
+          git push origin HEAD:${{ github.ref_name }}
+          gh workflow run ps4.yml -R ${{ github.repository }} --ref ${{ github.ref_name }}
