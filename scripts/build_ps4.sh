@@ -23,6 +23,19 @@ cp "$B/cmake/ps4.cmake" out/info/ps4.cmake 2>/dev/null || true
 python3 scripts/inject_preflight.py "$B/src/ps4/main.c" | tee out/info/injecao.txt
 cp "$B/src/ps4/main.c" out/info/ps4_main_injetado.c
 
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  {
+    echo "## Checagem prévia"
+    echo '```'
+    cat out/info/injecao.txt || true
+    echo '```'
+    echo "## main.c original do PS4"
+    echo '```c'
+    cat out/info/ps4_main_original.c || true
+    echo '```'
+  } >> "$GITHUB_STEP_SUMMARY"
+fi
+
 cmake -S "$B" -B build $CMAKE_ARGS
 cmake --build build -j"$(nproc)"
 

@@ -16,11 +16,15 @@ MARK = "PT_PREFLIGHT"
 BLOCK = r'''/* ---- PT_PREFLIGHT: inserido por scripts/inject_preflight.py ---- */
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <dirent.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #define PT_GAME_DIR "@DIR@"
 #define PT_GAME_WIN PT_GAME_DIR "/data.win"
+#define PT_LOG_FILE PT_GAME_DIR "/log.txt"
 
 static const char PT_HELP[] =
     "PIZZA TOWER PS4\n"
@@ -31,16 +35,49 @@ static const char PT_HELP[] =
     "  " PT_GAME_DIR "/data.win\n"
     "  e o resto da pasta do jogo (sons, idiomas etc.)\n"
     "\n"
-    "Depois abra o app de novo.\n";
+    "O data.win precisa ficar direto nesta pasta, sem subpasta no meio.\n"
+    "Depois abra o app de novo. O que o app fez fica em log.txt, nesta pasta.\n";
+
+/* Manda stdout e stderr para log.txt (sem buffer, para sobrar registro mesmo se travar). */
+static void pt_log_start(void) {
+    FILE *t;
+    mkdir(PT_GAME_DIR, 0777);
+    t = fopen(PT_LOG_FILE, "w");
+    if (t) fclose(t);
+    if (freopen(PT_LOG_FILE, "a", stdout)) setvbuf(stdout, NULL, _IONBF, 0);
+    if (freopen(PT_LOG_FILE, "a", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+    printf("[PizzaTower] log iniciado\n");
+}
+
+static void pt_list_dir(void) {
+    int count = 0;
+    struct dirent *e;
+    DIR *d = opendir(PT_GAME_DIR);
+    if (!d) {
+        printf("[PizzaTower] nao consegui abrir %s (errno=%d)\n", PT_GAME_DIR, errno);
+        return;
+    }
+    printf("[PizzaTower] conteudo de %s:\n", PT_GAME_DIR);
+    while ((e = readdir(d)) != NULL && count < 200) {
+        printf("  %s\n", e->d_name);
+        count++;
+    }
+    closedir(d);
+}
 
 static int pt_data_win_ok(void) {
-    char magic[4];
+    unsigned char m[4] = {0, 0, 0, 0};
     size_t n;
     FILE *f = fopen(PT_GAME_WIN, "rb");
-    if (!f) return 0;
-    n = fread(magic, 1, sizeof(magic), f);
+    if (!f) {
+        printf("[PizzaTower] fopen(%s) falhou, errno=%d\n", PT_GAME_WIN, errno);
+        return 0;
+    }
+    n = fread(m, 1, sizeof(m), f);
     fclose(f);
-    return n == sizeof(magic) && memcmp(magic, "FORM", 4) == 0;
+    printf("[PizzaTower] primeiros bytes do data.win: %02x %02x %02x %02x (lidos=%u)\n",
+           m[0], m[1], m[2], m[3], (unsigned)n);
+    return n == sizeof(m) && memcmp(m, "FORM", 4) == 0;
 }
 
 static void pt_write_help(void) {
@@ -54,10 +91,18 @@ static void pt_write_help(void) {
 
 /* Retorna 1 se o jogo pode iniciar; 0 se faltam arquivos. */
 static int pt_preflight(void) {
-    if (pt_data_win_ok()) return 1;
-    printf("[PizzaTower] data.win ausente ou invalido em %s\n", PT_GAME_WIN);
-    pt_write_help();
-    return 0;
+    pt_log_start();
+    pt_list_dir();
+    if (!pt_data_win_ok()) {
+        printf("[PizzaTower] data.win ausente ou invalido: o jogo nao sera iniciado\n");
+        pt_write_help();
+        return 0;
+    }
+    if (chdir(PT_GAME_DIR) != 0) {
+        printf("[PizzaTower] chdir(%s) falhou, errno=%d\n", PT_GAME_DIR, errno);
+    }
+    printf("[PizzaTower] data.win ok; iniciando o runner\n");
+    return 1;
 }
 /* ---- fim PT_PREFLIGHT ---- */
 
