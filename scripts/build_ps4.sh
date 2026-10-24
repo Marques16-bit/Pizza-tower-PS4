@@ -33,13 +33,13 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo '```'
     {
       grep -rnE '"[^"]*(/data|/app0|/mnt|data\.win|[Bb]utterscotch)[^"]*"' \
-        "$B/src/ps4" "$B/cmake/ps4.cmake" "$B/src/backends/sdl12.c" "$B/src/platformdefs.h" 2>/dev/null
+        "$B/src/ps4" "$B/cmake/ps4.cmake" "$B"/src/backends/sdl*.c "$B/src/platformdefs.h" 2>/dev/null
       grep -rnE '"(/data|/app0|/mnt)[^"]*"' "$B/src" 2>/dev/null
     } | sort -u | head -60 || true
     echo '```'
-    echo "## SDL: video e controle (sdl12.c)"
+    echo "## SDL: video e controle (backend SDL)"
     echo '```'
-    grep -nE 'SDL_(Init|Quit|SetVideoMode|Flip|Joystick|JoystickOpen|PollEvent|CreateRGB)|JOYSTICK|JOYBUTTON|JOYHAT' "$B/src/backends/sdl12.c" 2>/dev/null | head -60 || true
+    grep -nE 'SDL_(Init|Quit|SetVideoMode|Flip|Joystick|JoystickOpen|PollEvent|CreateRGB)|JOYSTICK|JOYBUTTON|JOYHAT' "$B"/src/backends/sdl*.c 2>/dev/null | head -60 || true
     echo '```'
     echo "## ps4.cmake (SDL e link)"
     echo '```'

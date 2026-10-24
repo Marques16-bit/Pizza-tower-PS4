@@ -115,40 +115,58 @@ static void pt_list_dir(void) {
 static int pt_data_win_ok(void) {
     unsigned char m[4] = {0, 0, 0, 0};
     size_t n;
-    struct stat st;
+    long size = -1;
     FILE *f = fopen(PT_GAME_WIN, "rb");
     if (!f) {
         pt_log("[PizzaTower] fopen(%s) falhou, errno=%d", PT_GAME_WIN, errno);
         return 0;
     }
     n = fread(m, 1, sizeof(m), f);
+    if (fseek(f, 0, SEEK_END) == 0) size = ftell(f);
     fclose(f);
     pt_log("[PizzaTower] primeiros bytes do data.win: %02x %02x %02x %02x (lidos=%u)",
            m[0], m[1], m[2], m[3], (unsigned)n);
-    if (stat(PT_GAME_WIN, &st) == 0) {
-        pt_log("[PizzaTower] data.win tem %lld bytes", (long long)st.st_size);
-    }
+    pt_log("[PizzaTower] data.win tem %ld bytes", size);
     return n == sizeof(m) && memcmp(m, "FORM", 4) == 0;
 }
 
-/* O runner carrega o data.win inteiro na memoria: vemos quanto o app consegue alocar. */
-static void pt_probe_memory(void) {
-    static const unsigned mb[] = {128, 256, 512, 1024, 1536, 2048};
-    size_t i, k;
-    for (i = 0; i < sizeof(mb) / sizeof(mb[0]); i++) {
-        size_t sz = (size_t)mb[i] * 1024u * 1024u;
-        unsigned char *p;
-        pt_log("[PizzaTower] memoria: tentando %u MB", mb[i]);
-        p = (unsigned char *)malloc(sz);
-        if (!p) {
-            pt_log("[PizzaTower] memoria: malloc de %u MB FALHOU", mb[i]);
-            break;
-        }
-        for (k = 0; k < sz; k += 4096) p[k] = 1;
-        pt_log("[PizzaTower] memoria: %u MB ok", mb[i]);
-        free(p);
+static int pt_file_exists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
+/* Modulos de video que o SDL do PS4 pede (copiados do proprio console; nao vao no repositorio). */
+static void pt_log_env(void) {
+    static const char *const mods[] = {
+        "/app0/sce_module/libScePigletv2VSH.sprx",
+        "/app0/sce_module/libSceShaccVSH.sprx",
+        "/data/self/system/common/lib/libScePigletv2VSH.sprx",
+        "/data/self/system/common/lib/libSceShaccVSH.sprx",
+        "/system/common/lib/libScePigletv2VSH.sprx",
+        "/system/common/lib/libSceShaccVSH.sprx"
+    };
+    size_t i;
+#ifdef ENABLE_SW_RENDERER
+    pt_log("[PizzaTower] build: renderer por CPU (ENABLE_SW_RENDERER)");
+#else
+    pt_log("[PizzaTower] build: renderer OpenGL (sem ENABLE_SW_RENDERER)");
+#endif
+#ifdef ENABLE_MODERN_GL
+    pt_log("[PizzaTower] build: ENABLE_MODERN_GL ligado");
+#endif
+    for (i = 0; i < sizeof(mods) / sizeof(mods[0]); i++) {
+        pt_log("[PizzaTower] %s: %s", mods[i], pt_file_exists(mods[i]) ? "EXISTE" : "nao existe");
     }
 }
+
+#ifdef SDL_h_
+static void pt_sdl_log(void *ud, int category, SDL_LogPriority pr, const char *msg) {
+    (void)ud; (void)category; (void)pr;
+    pt_log("[SDL] %s", msg);
+}
+#endif
 
 static void pt_write_help(void) {
     FILE *f;
@@ -169,14 +187,18 @@ static int pt_preflight(void) {
     signal(SIGILL, pt_on_signal);
     signal(SIGFPE, pt_on_signal);
     signal(SIGABRT, pt_on_signal);
+    pt_log_env();
     pt_list_dir();
     if (!pt_data_win_ok()) {
         pt_log("[PizzaTower] data.win ausente ou invalido: o jogo nao sera iniciado");
         pt_write_help();
         return 0;
     }
-    pt_probe_memory();
     pt_redirect_std();
+#ifdef SDL_h_
+    SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
+    SDL_LogSetOutputFunction(pt_sdl_log, NULL);
+#endif
     if (chdir(PT_GAME_DIR) != 0) {
         pt_log("[PizzaTower] chdir(%s) falhou, errno=%d", PT_GAME_DIR, errno);
     }
