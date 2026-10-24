@@ -29,6 +29,22 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo '```'
     cat out/info/injecao.txt || true
     echo '```'
+    echo "## Caminhos de arquivo no código do PS4"
+    echo '```'
+    {
+      grep -rnE '"[^"]*(/data|/app0|/mnt|data\.win|[Bb]utterscotch)[^"]*"' \
+        "$B/src/ps4" "$B/cmake/ps4.cmake" "$B/src/backends/sdl12.c" "$B/src/platformdefs.h" 2>/dev/null
+      grep -rnE '"(/data|/app0|/mnt)[^"]*"' "$B/src" 2>/dev/null
+    } | sort -u | head -60 || true
+    echo '```'
+    echo "## SDL: video e controle (sdl12.c)"
+    echo '```'
+    grep -nE 'SDL_(Init|Quit|SetVideoMode|Flip|Joystick|JoystickOpen|PollEvent|CreateRGB)|JOYSTICK|JOYBUTTON|JOYHAT' "$B/src/backends/sdl12.c" 2>/dev/null | head -60 || true
+    echo '```'
+    echo "## ps4.cmake (SDL e link)"
+    echo '```'
+    grep -nE 'SDL|LINK|link|lib|include' "$B/cmake/ps4.cmake" 2>/dev/null | head -40 || true
+    echo '```'
     echo "## main.c original do PS4"
     echo '```c'
     cat out/info/ps4_main_original.c || true

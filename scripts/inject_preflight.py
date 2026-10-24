@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Injeta no main.c do PS4 (Butterscotch) a checagem prévia dos arquivos do jogo.
+"""Ajusta o main.c do PS4 (Butterscotch) para o projeto Pizza Tower.
 
-- Troca qualquer caminho "...data.win" do main.c por /data/pizza-tower/data.win.
-- Antes de iniciar o runner, confere se esse data.win existe e começa com "FORM".
-  Se não existir, cria /data/pizza-tower/ com um aviso em texto e encerra sem rodar o jogo.
+1. Troca qualquer caminho "...data.win" por /data/pizza-tower/data.win.
+2. Antes de iniciar o runner: confere data.win (existe e começa com "FORM"),
+   grava log em /data/pizza-tower/log.txt com escrita direta em arquivo,
+   testa quanta memória o app consegue alocar, registra sinais de falha e a saída do app.
+   Se faltar o jogo, cria a pasta com um aviso em texto e encerra sem rodar o runner.
+3. Move a pasta de saves para /data/pizza-tower/save e registra o início e o fim do loop().
 Uso: python3 scripts/inject_preflight.py vendor/butterscotch/src/ps4/main.c
 """
 import pathlib
@@ -15,8 +18,12 @@ MARK = "PT_PREFLIGHT"
 
 BLOCK = r'''/* ---- PT_PREFLIGHT: inserido por scripts/inject_preflight.py ---- */
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -38,15 +45,55 @@ static const char PT_HELP[] =
     "O data.win precisa ficar direto nesta pasta, sem subpasta no meio.\n"
     "Depois abra o app de novo. O que o app fez fica em log.txt, nesta pasta.\n";
 
-/* Manda stdout e stderr para log.txt (sem buffer, para sobrar registro mesmo se travar). */
-static void pt_log_start(void) {
-    FILE *t;
+/* Log por escrita direta: abre, grava e fecha a cada linha (sobra registro mesmo se o app cair). */
+static void pt_log(const char *fmt, ...) {
+    char buf[512];
+    int n, fd;
+    va_list ap;
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (n > (int)sizeof(buf) - 2) n = (int)sizeof(buf) - 2;
+    buf[n++] = '\n';
+    fd = open(PT_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0) return;
+    (void)!write(fd, buf, (size_t)n);
+    close(fd);
+}
+
+static void pt_log_reset(void) {
+    int fd;
     mkdir(PT_GAME_DIR, 0777);
-    t = fopen(PT_LOG_FILE, "w");
-    if (t) fclose(t);
-    if (freopen(PT_LOG_FILE, "a", stdout)) setvbuf(stdout, NULL, _IONBF, 0);
-    if (freopen(PT_LOG_FILE, "a", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
-    printf("[PizzaTower] log iniciado\n");
+    fd = open(PT_LOG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd >= 0) close(fd);
+}
+
+/* Manda stdout e stderr (mensagens do runner) para o mesmo arquivo. */
+static void pt_redirect_std(void) {
+    int fd = open(PT_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0) return;
+    dup2(fd, 1);
+    dup2(fd, 2);
+    if (fd > 2) close(fd);
+}
+
+static void pt_on_exit(void) {
+    pt_log("[PizzaTower] app encerrando (exit)");
+}
+
+static void pt_on_signal(int sig) {
+    char b[48] = "[PizzaTower] SINAL ";
+    int i = 19, fd;
+    if (sig >= 10) b[i++] = (char)('0' + (sig / 10) % 10);
+    b[i++] = (char)('0' + sig % 10);
+    b[i++] = '\n';
+    fd = open(PT_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd >= 0) {
+        (void)!write(fd, b, (size_t)i);
+        close(fd);
+    }
+    _exit(128 + sig);
 }
 
 static void pt_list_dir(void) {
@@ -54,12 +101,12 @@ static void pt_list_dir(void) {
     struct dirent *e;
     DIR *d = opendir(PT_GAME_DIR);
     if (!d) {
-        printf("[PizzaTower] nao consegui abrir %s (errno=%d)\n", PT_GAME_DIR, errno);
+        pt_log("[PizzaTower] nao consegui abrir %s (errno=%d)", PT_GAME_DIR, errno);
         return;
     }
-    printf("[PizzaTower] conteudo de %s:\n", PT_GAME_DIR);
+    pt_log("[PizzaTower] conteudo de %s:", PT_GAME_DIR);
     while ((e = readdir(d)) != NULL && count < 200) {
-        printf("  %s\n", e->d_name);
+        pt_log("  %s", e->d_name);
         count++;
     }
     closedir(d);
@@ -68,16 +115,39 @@ static void pt_list_dir(void) {
 static int pt_data_win_ok(void) {
     unsigned char m[4] = {0, 0, 0, 0};
     size_t n;
+    struct stat st;
     FILE *f = fopen(PT_GAME_WIN, "rb");
     if (!f) {
-        printf("[PizzaTower] fopen(%s) falhou, errno=%d\n", PT_GAME_WIN, errno);
+        pt_log("[PizzaTower] fopen(%s) falhou, errno=%d", PT_GAME_WIN, errno);
         return 0;
     }
     n = fread(m, 1, sizeof(m), f);
     fclose(f);
-    printf("[PizzaTower] primeiros bytes do data.win: %02x %02x %02x %02x (lidos=%u)\n",
+    pt_log("[PizzaTower] primeiros bytes do data.win: %02x %02x %02x %02x (lidos=%u)",
            m[0], m[1], m[2], m[3], (unsigned)n);
+    if (stat(PT_GAME_WIN, &st) == 0) {
+        pt_log("[PizzaTower] data.win tem %lld bytes", (long long)st.st_size);
+    }
     return n == sizeof(m) && memcmp(m, "FORM", 4) == 0;
+}
+
+/* O runner carrega o data.win inteiro na memoria: vemos quanto o app consegue alocar. */
+static void pt_probe_memory(void) {
+    static const unsigned mb[] = {128, 256, 512, 1024, 1536, 2048};
+    size_t i, k;
+    for (i = 0; i < sizeof(mb) / sizeof(mb[0]); i++) {
+        size_t sz = (size_t)mb[i] * 1024u * 1024u;
+        unsigned char *p;
+        pt_log("[PizzaTower] memoria: tentando %u MB", mb[i]);
+        p = (unsigned char *)malloc(sz);
+        if (!p) {
+            pt_log("[PizzaTower] memoria: malloc de %u MB FALHOU", mb[i]);
+            break;
+        }
+        for (k = 0; k < sz; k += 4096) p[k] = 1;
+        pt_log("[PizzaTower] memoria: %u MB ok", mb[i]);
+        free(p);
+    }
 }
 
 static void pt_write_help(void) {
@@ -91,17 +161,26 @@ static void pt_write_help(void) {
 
 /* Retorna 1 se o jogo pode iniciar; 0 se faltam arquivos. */
 static int pt_preflight(void) {
-    pt_log_start();
+    pt_log_reset();
+    pt_log("== Pizza Tower PS4: log ==");
+    atexit(pt_on_exit);
+    signal(SIGSEGV, pt_on_signal);
+    signal(SIGBUS, pt_on_signal);
+    signal(SIGILL, pt_on_signal);
+    signal(SIGFPE, pt_on_signal);
+    signal(SIGABRT, pt_on_signal);
     pt_list_dir();
     if (!pt_data_win_ok()) {
-        printf("[PizzaTower] data.win ausente ou invalido: o jogo nao sera iniciado\n");
+        pt_log("[PizzaTower] data.win ausente ou invalido: o jogo nao sera iniciado");
         pt_write_help();
         return 0;
     }
+    pt_probe_memory();
+    pt_redirect_std();
     if (chdir(PT_GAME_DIR) != 0) {
-        printf("[PizzaTower] chdir(%s) falhou, errno=%d\n", PT_GAME_DIR, errno);
+        pt_log("[PizzaTower] chdir(%s) falhou, errno=%d", PT_GAME_DIR, errno);
     }
-    printf("[PizzaTower] data.win ok; iniciando o runner\n");
+    pt_log("[PizzaTower] data.win ok; iniciando o runner");
     return 1;
 }
 /* ---- fim PT_PREFLIGHT ---- */
@@ -110,6 +189,7 @@ static int pt_preflight(void) {
 
 MAIN_RE = re.compile(r'^[ \t]*(?:static\s+)?int\s+main\s*\([^)]*\)\s*\{', re.M)
 PATH_RE = re.compile(r'"[^"\n]*data\.win"')
+LOOP_RE = re.compile(r'^([ \t]*)int\s+ret\s*=\s*loop\((.*)\);[ \t]*$', re.M)
 
 
 def main() -> int:
@@ -130,7 +210,6 @@ def main() -> int:
             if "main" in line:
                 print(f"  {i}: {line}", file=sys.stderr)
         return 1
-
     print("main encontrado:", m.group(0).strip())
 
     # 1) caminho do data.win
@@ -143,7 +222,35 @@ def main() -> int:
         print("AVISO: nenhum caminho 'data.win' literal no main.c; "
               "o runner pode receber o caminho de outro jeito (precisa ser ligado à mão).")
 
-    # 2) chamada no começo do main e bloco antes dele (chamada primeiro: posição mais à frente)
+    # 2) pasta de saves dentro da pasta do jogo
+    n_save = src.count('"/data/butterscotch"')
+    if n_save:
+        src = src.replace('"/data/butterscotch"', '"' + GAME_DIR + '/save"')
+        print(f"pasta de saves trocada em {n_save} lugar(es): {GAME_DIR}/save")
+    else:
+        print("AVISO: literal \"/data/butterscotch\" não encontrado (pasta de saves não trocada)")
+
+    # 3) registra o caminho final e o início/fim do loop()
+    if "args.dataWinPath = dataWinPath;" in src:
+        src = src.replace(
+            "args.dataWinPath = dataWinPath;",
+            'args.dataWinPath = dataWinPath;\n    pt_log("[PizzaTower] dataWinPath=%s", dataWinPath);',
+            1,
+        )
+    else:
+        print("AVISO: 'args.dataWinPath = dataWinPath;' não encontrado (sem log do caminho)")
+
+    lm = LOOP_RE.search(src)
+    if lm:
+        ind, rest = lm.group(1), lm.group(2)
+        new = (f'{ind}pt_log("[PizzaTower] chamando loop()");\n'
+               f'{ind}int ret = loop({rest});\n'
+               f'{ind}pt_log("[PizzaTower] loop() retornou %d", ret);')
+        src = src[:lm.start()] + new + src[lm.end():]
+    else:
+        print("AVISO: chamada 'int ret = loop(...)' não encontrada (sem log do loop)")
+
+    # 4) chamada no começo do main e bloco antes dele (chamada primeiro: posição mais à frente)
     m = MAIN_RE.search(src)
     call = "\n    if (!pt_preflight()) { return 0; } /* PT_PREFLIGHT */"
     src = src[:m.end()] + call + src[m.end():]
