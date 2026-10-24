@@ -1,0 +1,11 @@
+# Gerados pelo build
+vendor/
+build/
+out/
+*.pkg
+*.o
+# Arquivos do jogo e do mod: nunca versionar (direitos autorais + limite de 100 MB do git)
+*.win
+*.bank
+*.fsb
+audiogroup*.dat
