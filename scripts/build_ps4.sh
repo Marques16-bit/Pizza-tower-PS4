@@ -20,7 +20,7 @@ echo "== Checagem prévia dos arquivos do jogo =="
 mkdir -p out/info
 cp "$B/src/ps4/main.c" out/info/ps4_main_original.c 2>/dev/null || true
 cp "$B/cmake/ps4.cmake" out/info/ps4.cmake 2>/dev/null || true
-python3 scripts/inject_preflight.py "$B/src/ps4/main.c"
+python3 scripts/inject_preflight.py "$B/src/ps4/main.c" | tee out/info/injecao.txt
 cp "$B/src/ps4/main.c" out/info/ps4_main_injetado.c
 
 cmake -S "$B" -B build $CMAKE_ARGS
@@ -32,3 +32,6 @@ ls -la out
 
 echo "== Empacotando .pkg =="
 bash scripts/package_pkg.sh
+
+echo "== Resumo da checagem prévia =="
+cat out/info/injecao.txt

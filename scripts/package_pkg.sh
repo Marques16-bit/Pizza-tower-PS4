@@ -25,6 +25,12 @@ fi
 echo "== Ferramentas em $BIN =="
 ls -la "$BIN" | head -30
 
+# 0) O sample só cria o param.sfo quando é compilado; gera aqui se ainda não existir
+if [ ! -f "$HW/sce_sys/param.sfo" ]; then
+  echo "param.sfo ainda não existe no sample; gerando com o make do próprio sample"
+  make -C "$HW"
+fi
+
 # 1) Monta a pasta do pacote
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
