@@ -1,10 +1,9 @@
-name: ps4
+name: Gerar PKG
 on:
   push:
     branches: [main]
+    paths-ignore: ['repo.zip']
   workflow_dispatch:
-permissions:
-  contents: write
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -13,28 +12,23 @@ jobs:
       DOTNET_ROLL_FORWARD: Major
     steps:
       - uses: actions/checkout@v4
-      - name: Descompactar repo.zip na raiz
-        if: ${{ hashFiles('repo.zip') != '' }}
-        run: |
-          unzip -o repo.zip -x '.github/*'
-          git rm -q repo.zip
-          git add -A
-          git config user.name "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-          git commit -m "Descompacta repo.zip"
-          git push origin HEAD:${{ github.ref_name }}
       - name: Dependências
-        run: sudo apt-get update && sudo apt-get install -y clang lld llvm cmake unzip
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm cmake
       - name: Toolchain OpenOrbis
         run: bash scripts/setup_toolchain.sh
-      - name: Sanity (hello_world)
-        run: bash scripts/sanity_sample.sh
-      - name: Butterscotch PS4
-        run: |
-          bash scripts/fetch_butterscotch.sh
-          bash scripts/build_ps4.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Baixar Butterscotch
+        run: bash scripts/fetch_butterscotch.sh
+      - name: Compilar e empacotar
+        run: bash scripts/build_ps4.sh
+      - name: Publicar o pkg
+        uses: actions/upload-artifact@v4
         with:
-          name: ps4-out
-          path: out/
+          name: pizza-tower-pkg
+          path: out/*.pkg
+          if-no-files-found: error
+      - name: Diagnóstico (só se falhar)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostico
+          path: out/info/
