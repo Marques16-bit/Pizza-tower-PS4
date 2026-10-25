@@ -20,6 +20,9 @@ echo "== Checagem prévia dos arquivos do jogo =="
 mkdir -p out/info
 cp "$B/src/ps4/main.c" out/info/ps4_main_original.c 2>/dev/null || true
 cp "$B/cmake/ps4.cmake" out/info/ps4.cmake 2>/dev/null || true
+for f in src/loop.c src/loop.h src/platformdefs.h src/backends/sdl2.c CMakeLists.txt; do
+  cp "$B/$f" out/info/ 2>/dev/null || true
+done
 python3 scripts/inject_preflight.py "$B/src/ps4/main.c" | tee out/info/injecao.txt
 cp "$B/src/ps4/main.c" out/info/ps4_main_injetado.c
 

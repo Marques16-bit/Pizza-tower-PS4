@@ -46,7 +46,7 @@ static const char PT_HELP[] =
     "Depois abra o app de novo. O que o app fez fica em log.txt, nesta pasta.\n";
 
 /* Log por escrita direta: abre, grava e fecha a cada linha (sobra registro mesmo se o app cair). */
-static void pt_log(const char *fmt, ...) {
+void pt_log(const char *fmt, ...) {
     char buf[512];
     int n, fd;
     va_list ap;
@@ -137,6 +137,19 @@ static int pt_file_exists(const char *path) {
     return 1;
 }
 
+/* Mesma funcao do libkernel, com nome local para nao conflitar com nenhum header. */
+extern int pt_load_start_module(const char *name, unsigned long argc, const void *argv,
+                                unsigned flags, void *opt, int *res) __asm__("sceKernelLoadStartModule");
+
+/* Tenta carregar o modulo e registra o codigo: 0x80020002 = arquivo ausente, 0x8002000D = arquivo danificado. */
+static void pt_try_module(const char *path) {
+    int res = 0;
+    int h;
+    if (!pt_file_exists(path)) return;
+    h = pt_load_start_module(path, 0, NULL, 0, NULL, &res);
+    pt_log("[PizzaTower] sceKernelLoadStartModule(%s) = 0x%08x (res=%d)", path, (unsigned)h, res);
+}
+
 /* Modulos de video que o SDL do PS4 pede (copiados do proprio console; nao vao no repositorio). */
 static void pt_log_env(void) {
     static const char *const mods[] = {
@@ -159,6 +172,8 @@ static void pt_log_env(void) {
     for (i = 0; i < sizeof(mods) / sizeof(mods[0]); i++) {
         pt_log("[PizzaTower] %s: %s", mods[i], pt_file_exists(mods[i]) ? "EXISTE" : "nao existe");
     }
+    pt_try_module("/data/self/system/common/lib/libSceShaccVSH.sprx");
+    pt_try_module("/data/self/system/common/lib/libScePigletv2VSH.sprx");
 }
 
 #ifdef SDL_h_
@@ -181,6 +196,7 @@ static void pt_write_help(void) {
 static int pt_preflight(void) {
     pt_log_reset();
     pt_log("== Pizza Tower PS4: log ==");
+    pt_log("[PizzaTower] injetor v11 | trace SDL: @TRACE@");
     atexit(pt_on_exit);
     signal(SIGSEGV, pt_on_signal);
     signal(SIGBUS, pt_on_signal);
@@ -208,6 +224,53 @@ static int pt_preflight(void) {
 /* ---- fim PT_PREFLIGHT ---- */
 
 '''.replace("@DIR@", GAME_DIR)
+
+
+SDL_TRACE_FUNCS = [
+    "SDL_Init", "SDL_InitSubSystem", "SDL_CreateWindow", "SDL_CreateRenderer",
+    "SDL_CreateTexture", "SDL_GetWindowSurface", "SDL_CreateRGBSurfaceFrom",
+    "SDL_CreateRGBSurface", "SDL_GL_CreateContext", "SDL_GL_SetAttribute",
+    "SDL_NumJoysticks", "SDL_JoystickOpen", "SDL_OpenAudioDevice",
+    "SDL_UpdateWindowSurface", "SDL_UpdateTexture", "SDL_RenderCopy",
+    "SDL_SetWindowFullscreen", "SDL_GetNumVideoDisplays", "SDL_GetCurrentDisplayMode",
+]
+
+TRACE_HEADER = r"""
+/* ---- PT_TRACE: inserido por scripts/inject_preflight.py ---- */
+extern void pt_log(const char *fmt, ...);
+#define PT_TRACE(name, call) ({ \
+    static int pt_n; \
+    int pt_on = (pt_n++ < 3); \
+    if (pt_on) pt_log("[trace] " name " ..."); \
+    __typeof__(call) pt_r = (call); \
+    if (pt_on) pt_log("[trace] " name " -> %ld [%s]", (long)pt_r, SDL_GetError()); \
+    pt_r; })
+"""
+
+
+def instrument_sdl(main_path: pathlib.Path) -> str:
+    """Registra no log (antes e depois) as primeiras chamadas SDL do backend sdl2.c."""
+    sdl_c = main_path.parent.parent / "backends" / "sdl2.c"
+    if not sdl_c.exists():
+        print("AVISO: src/backends/sdl2.c não encontrado; sem trace do SDL")
+        return "inativo (sdl2.c nao encontrado)"
+    text = sdl_c.read_text(encoding="utf-8")
+    if "PT_TRACE" in text:
+        print("trace do SDL já injetado")
+        return "ativo (ja injetado)"
+    used = [f for f in SDL_TRACE_FUNCS if re.search(r'\b' + f + r'\s*\(', text)]
+    inc = re.search(r'^[ \t]*#[ \t]*include[ \t]*[<"][^>"]*SDL\.h[>"][^\n]*\n', text, re.M)
+    if not used or not inc:
+        print("AVISO: sem chamadas SDL conhecidas ou sem include do SDL.h em sdl2.c; sem trace")
+        return "inativo (sem chamadas SDL conhecidas ou sem include)"
+    macros = TRACE_HEADER
+    for f in used:
+        macros += f'#define {f}(...) PT_TRACE("{f}", {f}(__VA_ARGS__))\n'
+    macros += "/* ---- fim PT_TRACE ---- */\n"
+    text = text[:inc.end()] + macros + text[inc.end():]
+    sdl_c.write_text(text, encoding="utf-8")
+    print("trace do SDL injetado em sdl2.c para:", ", ".join(used))
+    return "ativo: " + " ".join(used)
 
 MAIN_RE = re.compile(r'^[ \t]*(?:static\s+)?int\s+main\s*\([^)]*\)\s*\{', re.M)
 PATH_RE = re.compile(r'"[^"\n]*data\.win"')
@@ -273,10 +336,11 @@ def main() -> int:
         print("AVISO: chamada 'int ret = loop(...)' não encontrada (sem log do loop)")
 
     # 4) chamada no começo do main e bloco antes dele (chamada primeiro: posição mais à frente)
+    trace_status = instrument_sdl(path)
     m = MAIN_RE.search(src)
     call = "\n    if (!pt_preflight()) { return 0; } /* PT_PREFLIGHT */"
     src = src[:m.end()] + call + src[m.end():]
-    src = src[:m.start()] + BLOCK + src[m.start():]
+    src = src[:m.start()] + BLOCK.replace("@TRACE@", trace_status) + src[m.start():]
 
     path.write_text(src, encoding="utf-8")
     print("preflight injetado em", path)
